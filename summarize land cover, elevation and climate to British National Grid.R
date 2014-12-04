@@ -13,6 +13,7 @@ library(raster)
 library(sp)
 library(rgeos)
 library(rgdal)
+library(reshape)
 
 ####====   SET WORKING DIRECTORIES   ====####
 
@@ -49,8 +50,8 @@ if (!cluster) {
 
 generic.scriptswd <- paste(parentwd, "/Git/generic scripts", sep="")
 landcoverwd <- paste(parentwd, "/GIS/land cover", sep="")
-climatewd <- paste(parentwd, "/GIS/climate", sep="")
-elevationwd <- paste(parentwd, "/GIS/elevation", sep="")
+climatewd <- paste(parentwd, "/GIS/climate/UKCP09", sep="")
+elevationwd <- paste(parentwd, "/GIS/elevation/CGIAR-STRM elevation data/GB_Ireland", sep="")
 soilwd <- paste(parentwd, "/GIS/land cover/soil/octop_insp_directory", sep="")
 # outputwd <- paste(parentwd, "/curlew_change/output", sep="")
 # workspacewd <- paste(parentwd, "/curlew_change/workspaces", sep="")
@@ -144,7 +145,7 @@ ite2007gb.2 <- data.frame(subset(ite2007gb, select=c("gridref","easting","northi
 
 ### both ite2000 and ite2007 include squares entirely coastal/at sea (do not include any true land at all)
 # identify and remove these squares based on the GB 1km land grid shapefile
-GB1kmlandgrid <- readOGR(paste(parentwd, "/GIS/GB/NationalGrids/GB", sep=""), "GB001kmclip2land_corrected")
+GB1kmlandgrid <- readOGR(paste(parentwd, "/GIS/British Isles/NationalGrids/GB", sep=""), "GB001kmclip2land_corrected")
 ite2000gb.3 <- subset(ite2000gb.2, ite2000gb.2$gridref %in% GB1kmlandgrid$ONEKMREF)
 ite2007gb.3 <- subset(ite2007gb.2, ite2007gb.2$gridref %in% GB1kmlandgrid$ONEKMREF)
 
@@ -232,16 +233,20 @@ soilmap <- raster("octop_insp")
 proj4string(soilmap) <- CRS("+init=epsg:3035")
 
 # load the GB 1km land grid
-GB1kmlandgrid <- readOGR(paste(parentwd, "/GIS/GB/NationalGrids/GB", sep=""), "GB001kmclip2land_corrected")
+GB1kmlandgrid <- readOGR(paste(parentwd, "/GIS/British Isles/NationalGrids/GB", sep=""), "GB001kmclip2land_corrected")
 
 # get centre points of all GB 1km grid squares, transform to vertical rather than horizontal matrix using t()
 # convert to shapefile and write to GB National Grid folder in GIS directory
-centrept1km <- t(sapply(slot(GB1kmlandgrid, "polygons"), function(x) slot(x, "labpt")))
+
+# centrept1km <- t(sapply(slot(GB1kmlandgrid, "polygons"), function(x) slot(x, "labpt"))) # use slots to access labpt (centre of each polygon)
+# centrept1km <- coordinates(GB1kmlandgrid) # shorter way to access centre points of each polygon
+
 GB1kmgridcentres <- data.frame(GB1kmlandgrid$ONEKMREF, centrept1km)
 colnames(GB1kmgridcentres) <- c("gridref","easting","northing")
 coordinates(GB1kmgridcentres) <- c("easting","northing")
 proj4string(GB1kmgridcentres) <- GB1kmlandgrid@proj4string
-# writeOGR(GB1kmgridcentres, dsn=(paste(parentwd, "/GIS/GB/NationalGrids/GB", sep="")), layer="GB001kmgrid_centrepoints", driver="ESRI Shapefile")
+# writeOGR(GB1kmgridcentres, dsn=(paste(parentwd, "/GIS/British Isles/NationalGrids/GB", sep="")), layer="GB001kmgrid_centrepoints", driver="ESRI Shapefile")
+
 
 # transform GB1kmgridcentres to same projection as soilmap (epsg3035 LAEA)
 GB1kmgridcentres.3035 <- spTransform(GB1kmgridcentres, CRS("+init=epsg:3035"))
@@ -266,69 +271,76 @@ write.table(soilGB1km.final, file="percent_organic_carbon_topsoil_1kmGB.csv", ro
 # original code written by Kate Plummer 25/09/2013
 # UKCP09 WEATHER DATA EXTRACTION
 
-#CODE TO MERGE UKCP09 .CSV FILES INTO ONE DATASET
-#This code is for years 1981 - 2011
+# Raw data files are UK MetOffice UKCP09 time series of monthly values
+# http://www.metoffice.gov.uk/climatechange/science/monitoring/ukcp09/download/monthly/time_series.html
+# Format of data described here: http://www.metoffice.gov.uk/climatechange/science/monitoring/ukcp09/download/timeformat.html
+# 16 climate variables available
+# values are for centre points of 5km grid squares in British National Grid
+# UKCP09 data includes data for Northern Ireland
 
-#READ IN WEATHER FILES:---------------------------------------------------------
-d   <- dir(climatewd)
-d   <- d[-match("readme.txt", d)] 
-RAW <- vector("list", length=length(d))
+# CODE TO MERGE UKCP09 .CSV FILES INTO ONE DATASET
+# This code is for years 1981 - 2011
+
+# READ IN WEATHER FILES:---------------------------------------------------------
+d <- dir(climatewd) # does the same as setwd(), list.files()
+d <- d[grep("csv", d)]
+d <- d[-grep("196", d)]
+d <- d[grep("MaxTemp|MinTemp|Rainfall", d)]
+
+RAW <- list()
 
 for (i in 1:length(d)){
-  RAW[[i]]<-read.csv(paste(climatewd, d[i], sep="/"),header=T)
+  RAW[[i]]<-read.csv(paste(climatewd,d[i],sep="/"), header=T)
 }
+
 names(RAW) <- as.character(strsplit(d, ".csv"))
 
 summary(RAW)
-summary(RAW[["AirFrost_1981-2000"]])
-
-rm(d, i, wd)
 #-------------------------------------------------------------------------------
 
 
 
-#JOIN WEATHER DATA YEAR BLOCKS:-------------------------------------------------
-#Create new list to store weather data:
+# JOIN WEATHER DATA YEAR BLOCKS:-------------------------------------------------
+# Create new list to store weather data:
 weather_var       <- as.character(lapply(strsplit(names(RAW), "_"), "[", 1))
 weather           <- weather_var[!duplicated(weather_var)]
 RAW_joined        <- vector("list", length=length(weather))
 names(RAW_joined) <- weather
 
-#Loop multi-merge:
+# Loop multi-merge:
+# merge datasets for different year chunks of a weather variable according to eastings and northings
 library(reshape)
 for (i in 1:length(weather)){
   RAW_joined[[i]] <- merge_recurse(RAW[weather_var==weather[i]], by= c("Easting", "Northing")) 
 }
 
 summary(RAW_joined)
-rm(RAW, i, weather_var)   
-gc()                
+# rm(RAW, i, weather_var)   
+# gc()                
 #-------------------------------------------------------------------------------
 
 
 
-#SUBSET TO ONLY YEARS AND MONTH BEING ANALYSED:---------------------------------
-#Which years/months to keep:
-#  load("Blackcaps/BLACA winter dataset.RData")  
-#  keep <- paste(WINsubs$month, WINsubs$year, sep=".")
-#  keep <- keep[!duplicated(keep)]
-#  keep <- c("Easting",  "Northing", keep)
+# SUBSET TO ONLY YEARS AND MONTH BEING ANALYSED:---------------------------------
+# Which years/months to keep:
 
-#Loop through selecting out these columns:
-#  RAW_sub        <- vector("list", length=length(weather))
-#  names(RAW_sub) <- weather
-#  for (i in 1:length(weather)){
-#      To_keep      <- grepl(paste(keep,collapse="|"), colnames(RAW_joined[[i]]))
-#      RAW_sub[[i]] <- subset(RAW_joined[[i]], select = To_keep)
-#      }
+RAW_sub <- list()
 
-#summary(RAW_sub) 
+# specify required years for your dataset
+years <- c(1995:2012)
+keepcols <- c("Easting","Northing",years)
+
+for (i in 1:length(weather)) {
+  RAW_sub[[i]] <- RAW_joined[[i]][,grep(paste(keepcols, collapse="|"), names(RAW_joined[[i]]))]
+}
+names(RAW_sub) <- weather
+summary(RAW_sub)
 #-------------------------------------------------------------------------------     
 
 
 
-#RESHAPE DATA:------------------------------------------------------------------
-#Convert to long and thin:
+# RESHAPE DATA:------------------------------------------------------------------
+# Convert to long and thin:
 library(reshape2)
 UKCP09       <- vector("list", length=length(weather))
 names(UKCP09)<- weather
@@ -349,28 +361,35 @@ for (i in 1:length(weather)){
 }
 SUM
 
-rm(i, RAW_joined, SUM, weather)
-gc()
+# rm(i, RAW_joined, SUM, weather)
+# gc()
 #-------------------------------------------------------------------------------   
 
 
 
-#MERGE ALL WEATHER DATA INTO ONE DATASET:---------------------------------------
-#Needs to be done in two parts due to space requirements
-UKCP09_1 <- merge_recurse(UKCP09[1:8], by= c("Easting", "Northing", "Date"))
+# MERGE ALL WEATHER DATA INTO ONE DATASET:---------------------------------------
+# Needs to be done in two parts due to space requirements
 
 
-UKCP09_2 <- UKCP09[9:16]
-rm(UKCP09) 
-gc()  
-UKCP09_2 <- merge_recurse(UKCP09_2, by= c("Easting", "Northing", "Date")) 
-gc() 
+UKCP09_1 <- merge_recurse(UKCP09[which(names(UKCP09) %in% weather)], by= c("Easting", "Northing", "Date"))
+
+UKCP09 <- UKCP09_1
+
+### only need to create UKCP09_2 if merging many different weather variables (e.g. up to 16 - all available)
+
+# UKCP09_2 <- UKCP09[9:16]
+# rm(UKCP09) 
+# gc()  
+# UKCP09_2 <- merge_recurse(UKCP09_2, by= c("Easting", "Northing", "Date")) 
+# gc() 
 
 
-UKCP09   <- merge(UKCP09_1, UKCP09_2, by= c("Easting", "Northing", "Date")) 
+# UKCP09   <- merge(UKCP09_1, UKCP09_2, by= c("Easting", "Northing", "Date"))
 
-rm(UKCP09_1, UKCP09_2)
-gc()
+# rm(UKCP09_1, UKCP09_2)
+# gc()
+
+rm(UKCP09_1, RAW, RAW_joined, RAW_sub)
 
 summary(UKCP09)
 
@@ -380,36 +399,75 @@ UKCP09$Month <- factor(substr(UKCP09$Date, 1,3), levels= c("Jan", "Feb", "Mar", 
                                                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))      
 
 UKCP09       <- UKCP09[, -match("Date", names(UKCP09))] #remove column by name from a dataframe
-UKCP09       <- UKCP09[,c(1:2,19:20,3:18)]              #restructure
+UKCP09       <- UKCP09[,c("Easting","Northing","Year","Month", weather)]              #restructure
 
 summary(UKCP09)
 #-------------------------------------------------------------------------------   
 
+### uncomment lines if all UKCP09 variables are being used
 
-
-#Missing data:
-summary(droplevels(subset(UKCP09, is.na(AirFrost))))    #one square 81-00 (E 397500, N 1137500)
-summary(droplevels(subset(UKCP09, is.na(CloudCover))))  #no data for 2007 onwards
-summary(droplevels(subset(UKCP09, is.na(GroundFrost)))) #some missing 81-00 in E 397500, N 1137500  
-summary(droplevels(subset(UKCP09, GroundFrost==-9999.000))) #42 records 2007-08
+# Missing data:
+# summary(droplevels(subset(UKCP09, is.na(AirFrost))))    #one square 81-00 (E 397500, N 1137500)
+# summary(droplevels(subset(UKCP09, is.na(CloudCover))))  #no data for 2007 onwards
+# summary(droplevels(subset(UKCP09, is.na(GroundFrost)))) #some missing 81-00 in E 397500, N 1137500  
+# summary(droplevels(subset(UKCP09, GroundFrost==-9999.000))) #42 records 2007-08
 summary(droplevels(subset(UKCP09, is.na(Rainfall))))        #two next door squares missing 81-00
-summary(droplevels(subset(UKCP09, is.na(SnowFall))))        #some squares missing for some months 81-00
-summary(droplevels(subset(UKCP09, SnowFall==-9999.000)))    #some of the same squares but for 2001-11
+# summary(droplevels(subset(UKCP09, is.na(SnowFall))))        #some squares missing for some months 81-00
+# summary(droplevels(subset(UKCP09, SnowFall==-9999.000)))    #some of the same squares but for 2001-11
 
-#Replace -9999's in weather variables with NAs:
+# Replace -9999's in weather variables with NAs:
 for (i in 5:ncol(UKCP09)){      
   UKCP09[,i][UKCP09[,i]<=-9998] <- NA
 }
 
-rm(i)
+setwd(climatewd)
+write.table(UKCP09, file="UKCP09_1981-2011_monthly_MaxTemp_MinTemp_Rainfall.txt", row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+
+### add grid references to UKCP09 by merging with 1km grid lookup file
+# UKCP09 include Northern Ireland data
+# GB 1km grid is only GB, so there will be data missing after merging (Northern Irish data)
+UKCP09 <- read.csv("c:/Users/samf/Documents/GIS/climate/UKCP09/UKCP09_1981-2011_monthly_MaxTemp_MinTemp_Rainfall.csv", header=TRUE)
+UKCP09$Eastingcentre <- UKCP09$Easting
+UKCP09$Northingcentre <- UKCP09$Northing
+UKCP09$Easting <- UKCP09$Easting-500
+UKCP09$Northing <- UKCP09$Northing-500
+
+GB1kmgrid <- read.table("c:/Users/samf/Documents/GIS/British Isles/NationalGrids/gridref lookups/GB001kmgid_eastnorth.txt", header=TRUE)
+GB1kmgrid <- rename(GB1kmgrid, c("easting"="Easting", "northing"="Northing"))
+UKCP09.1kmgridref <- merge(UKCP09, subset(GB1kmgrid, select=c("gridref","Easting","Northing")), by=c("Easting","Northing"))
+
+# UKCP09.1kmgridref.2 <- merge(UKCP09, subset(GB1kmgrid, select=c("gridref","Easting","Northing")), by=c("Easting","Northing"), all.x=TRUE) # shows missing data from Northern Ireland
+setwd(climatewd)
+write.table(UKCP09.1kmgridref, file="UKCP09_1981-2011_monthly_MaxTemp_MinTemp_Rainfall_GB.txt", row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+
+# rm(list=ls()[-which(ls() %in% "UKCP09")])
+# save.image()
 
 #########################################################################################################################################
-#SAVE UKCP09 WEATHER FILE
 
-ls()
-gc()
+#=============================================#
+####              ELEVATION               ####
+#=============================================#
 
-save.image("GBW/UKCP09_1981-2011.RData")  
-#25/09/2013 16:24:34
+# CGIAR STRM tiles required for GB + Ireland:
+# strm_34_02 - far west of Ireland
+# strm_35_02 - central Ireland
+# strm_36_02 - central England
+# strm_37_02 - East Anglia
+# strm_35_01 - Western Isles
+# strm 36_01 - Scotland
+# strm 36_03 - very southern edge of the South Coast Cornwall? 
 
-#########################################################################################################################################
+setwd(elevationwd)
+
+d <- dir(elevationwd)
+
+elevationraster <- list()
+
+for (i in 1:length(d)) {
+  tilename <- d[i] # open tile folder
+  elevationraster[[i]] <- raster(paste(tilename, "/", tilename, ".tif", sep=""))
+}
+
+fullelev <- do.call(merge, elevationraster)
+# writeRaster(fullelev, filename="GB_Ireland_CGIAR-STRM_elevation_raster_GCS_WGS_1984.tif", format="GTiff", overwrite=TRUE)
