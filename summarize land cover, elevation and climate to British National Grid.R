@@ -17,7 +17,7 @@ library(reshape)
 
 ####====   SET WORKING DIRECTORIES   ====####
 
-Mac <- FALSE
+Mac <- TRUE
 
 if(.Platform$OS =='windows') cluster <- FALSE
 if (Mac) cluster <- FALSE
@@ -55,6 +55,7 @@ elevationwd <- paste(parentwd, "/GIS/elevation/CGIAR-STRM elevation data/GB_Irel
 soilwd <- paste(parentwd, "/GIS/land cover/soil/octop_insp_directory", sep="")
 # outputwd <- paste(parentwd, "/curlew_change/output", sep="")
 # workspacewd <- paste(parentwd, "/curlew_change/workspaces", sep="")
+gridwd <- paste(parentwd, "/GIS/British Isles/NationalGrids/", sep="")
 
 #set paths to UNIXarchive for itedata
 if (!cluster) unix.archive <- "\\\\btodomain/FILES/UNIXArchive/itedata/"
@@ -395,8 +396,7 @@ summary(UKCP09)
 
 #Add year and month:
 UKCP09$Year  <- as.numeric(substr(UKCP09$Date, 5,8)) 
-UKCP09$Month <- factor(substr(UKCP09$Date, 1,3), levels= c("Jan", "Feb", "Mar", "Apr", "May", "Jun", 
-                                                           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))      
+UKCP09$Month <- factor(substr(UKCP09$Date, 1,3), levels= c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))      
 
 UKCP09       <- UKCP09[, -match("Date", names(UKCP09))] #remove column by name from a dataframe
 UKCP09       <- UKCP09[,c("Easting","Northing","Year","Month", weather)]              #restructure
@@ -420,28 +420,126 @@ for (i in 5:ncol(UKCP09)){
   UKCP09[,i][UKCP09[,i]<=-9998] <- NA
 }
 
+# write data with eastings/northings only, no gridrefs
 setwd(climatewd)
 write.table(UKCP09, file="UKCP09_1981-2011_monthly_MaxTemp_MinTemp_Rainfall.txt", row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
 
-### add grid references to UKCP09 by merging with 1km grid lookup file
-# UKCP09 include Northern Ireland data
-# GB 1km grid is only GB, so there will be data missing after merging (Northern Irish data)
-UKCP09 <- read.csv("c:/Users/samf/Documents/GIS/climate/UKCP09/UKCP09_1981-2011_monthly_MaxTemp_MinTemp_Rainfall.csv", header=TRUE)
-UKCP09$Eastingcentre <- UKCP09$Easting
-UKCP09$Northingcentre <- UKCP09$Northing
-UKCP09$Easting <- UKCP09$Easting-500
-UKCP09$Northing <- UKCP09$Northing-500
+#-------------------------------------------------------------------------------
 
-GB1kmgrid <- read.table("c:/Users/samf/Documents/GIS/British Isles/NationalGrids/gridref lookups/GB001kmgid_eastnorth.txt", header=TRUE)
-GB1kmgrid <- rename(GB1kmgrid, c("easting"="Easting", "northing"="Northing"))
-UKCP09.1kmgridref <- merge(UKCP09, subset(GB1kmgrid, select=c("gridref","Easting","Northing")), by=c("Easting","Northing"))
+########-------- USE FOLLOWING CODE IF EXPANDING 5KM GRID CLIMATE DATA TO 1KM GRID --------#######
 
-# UKCP09.1kmgridref.2 <- merge(UKCP09, subset(GB1kmgrid, select=c("gridref","Easting","Northing")), by=c("Easting","Northing"), all.x=TRUE) # shows missing data from Northern Ireland
+### UKCP09 data are summarized to the 5km grid
+# need to extract relevant years, summarize to seasons, and then expand data to the 1km grid
+
 setwd(climatewd)
-write.table(UKCP09.1kmgridref, file="UKCP09_1981-2011_monthly_MaxTemp_MinTemp_Rainfall_GB.txt", row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+UKCP09 <- read.table("UKCP09_1981-2011_monthly_MaxTemp_MinTemp_Rainfall.txt", sep="\t", header=TRUE)
 
-# rm(list=ls()[-which(ls() %in% "UKCP09")])
-# save.image()
+# extract relevant years
+UKCP09.yrs <- subset(UKCP09, Year >= 1995 & Year <= 1999 | Year >= 2007 & Year <= 2011)
+
+# need 1994 for winter temperatures in Nov-Dec (for 1994-95 winter)
+UKCP09.yrs94 <- subset(UKCP09, Year >= 1994 & Year <= 1999 | Year >= 2007 & Year <= 2011)
+
+#### extract climate variable and relevant seasons ####
+
+#---- min temp ----
+mintemp <- subset(UKCP09.yrs94, Month %in% c("Nov","Dec","Jan","Feb"), select=c("Easting","Northing","Year","Month","MinTemp"))
+# for min temp, remove Jan/Feb values for 1994 (not relevant months)
+mintemp <- mintemp[-which(mintemp$Year==1994 & mintemp$Month %in% c("Jan","Feb")),]
+mintemp <- droplevels(mintemp)
+
+# for winter values, need to add a winter variable to indicate span of months across winters (ie. 1994-95 winter=1995 winter, 1995-96 winter=1996 winter, etc)
+WinterYear <- ifelse(mintemp$Month %in% c("Nov","Dec"), mintemp$Year+1, mintemp$Year)
+mintemp <- data.frame(mintemp, WinterYear)
+mintemp <- subset(mintemp, WinterYear!=2012)
+mintemp <- subset(mintemp, WinterYear!=2000)
+# x <- mintemp[mintemp$Easting==462500 & mintemp$Northing==1217500,]
+# x <- subset(x, WinterYear!=2012)
+# x <- subset(x, WinterYear!=2000)
+
+# summarize across eastings/northings
+mean.mintemp <- aggregate(mintemp$MinTemp, by=list(mintemp$Easting, mintemp$Northing, mintemp$WinterYear), mean)
+colnames(mean.mintemp) <- c("Easting","Northing","Year","Mean.MinTemp")
+
+#---- max temp ----
+maxtemp <- subset(UKCP09.yrs, Month %in% c("May","Jun","Jul","Aug"), select=c("Easting","Northing","Year","Month","MaxTemp"))
+maxtemp <- droplevels(maxtemp)
+
+# summarize across eastings/northings
+mean.maxtemp <- aggregate(maxtemp$MaxTemp, by=list(maxtemp$Easting, maxtemp$Northing, maxtemp$Year), mean)
+colnames(mean.maxtemp) <- c("Easting","Northing","Year","Mean.MaxTemp")
+
+#---- spring rainfall ----
+springrain <- subset(UKCP09.yrs, Month %in% c("Mar","Apr","May"), select=c("Easting","Northing","Year","Month","Rainfall"))
+springrain <- droplevels(springrain)
+
+# summarize across eastings/northings
+tot.springrain <- aggregate(springrain$Rainfall, by=list(springrain$Easting, springrain$Northing, springrain$Year), sum)
+colnames(tot.springrain) <- c("Easting","Northing","Year","Total.SpringRain")
+
+#---- summer rainfall ----
+summerrain <- subset(UKCP09.yrs, Month %in% c("Jun","Jul","Aug"), select=c("Easting","Northing","Year","Month","Rainfall"))
+summerrain <- droplevels(summerrain)
+
+# summarize across eastings/northings
+tot.summerrain <- aggregate(summerrain$Rainfall, by=list(summerrain$Easting, summerrain$Northing, summerrain$Year), sum)
+colnames(tot.summerrain) <- c("Easting","Northing","Year","Total.SummerRain")
+
+#---- amalgamate all climate data into list
+climate <- list(mean.mintemp, mean.maxtemp, tot.springrain, tot.summerrain)
+
+#---- expand climate data to 1km grid ----
+# climate data are at 5km grid level
+# expand so that 5km data are replicated at the 1km grid
+
+for (i in 1:length(climate)) {
+  Easting5km <- climate[[i]]$Easting-2500
+  Northing5km <- climate[[i]]$Northing-2500
+  climate[[i]] <- data.frame(climate[[i]], Easting5km, Northing5km, Easting1km=Easting5km, Northing1km=Northing5km)
+}
+
+climate1km <- list()
+
+# fills in 1000,2000,3000,4000 and 6000,7000,8000,9000 grid squares (0000 and 5000 1km squares already are given by the data at the 5km grid level)
+for (i in 1:length(climate)) {
+  climate1km[[i]] <- climate[[i]]
+  for (r in 1:4) {
+    x <- climate[[i]]
+    x$Easting1km <- x$Easting1km + (r*1000)
+    x$Northing1km <- x$Northing1km + (r*1000)
+    climate1km[[i]] <- rbind(climate1km[[i]], x)
+    #     print(str(climate1km[[i]]))
+  }
+}
+
+#---- merge climate data to 1km grid refs ----
+GB1kmgridtext <- read.table(paste(parentwd, "GIS/British Isles/NationalGrids/gridref lookups/GB001kmgid_eastnorth.txt", sep="/"), sep="\t", header=TRUE)
+
+GB1kmgridtext <- rename(GB1kmgridtext, c("easting"="Easting1km", "northing"="Northing1km"))
+
+climategridref <- list()
+
+for (i in 1:length(climate1km)) {
+  climategridref[[i]] <- merge(climate1km[[i]], GB1kmgridtext, by=c("Easting1km","Northing1km"))
+}
+
+# subset to land-only points of GB grid
+climategridland <- lapply(climategridref, function(x) subset(x, land==1))
+
+# merge separate climate variables currently in list into a single dataframe
+climate1 <- merge(climategridland[[1]], climategridland[[2]], by=c("Easting1km","Northing1km","Easting","Northing","Year","Easting5km","Northing5km","gridref","land"))
+
+climatemerged <- merge_recurse(climategridland, by=c("Easting1km","Northing1km","Easting","Northing","Year","Easting5km","Northing5km","gridref","land"))
+
+options(scipen)
+
+# output mean/total temp and precip for each 1km grid square and early/late years to file
+setwd(climatewd)
+for (i in 1:length(climategridland)) {
+  write.table(climategridland[[i]], file=paste("UKCP09_curlewchange_earlyyears_lateyears_", names(climategridland[[i]][6]), ".txt", sep=""), row.names=FALSE, col.names=TRUE, sep="\t", quote=FALSE) 
+}
+
+write.table(climatemerged, file="UKCP09_curlewchange_earlyyears_lateyears_MinTemp_MaxTemp_SpringSummerRainfall.txt", row.names=FALSE, col.names=TRUE, sep="\t", quote=FALSE)
 
 #########################################################################################################################################
 
@@ -471,3 +569,53 @@ for (i in 1:length(d)) {
 
 fullelev <- do.call(merge, elevationraster)
 # writeRaster(fullelev, filename="GB_Ireland_CGIAR-STRM_elevation_raster_GCS_WGS_1984.tif", format="GTiff", overwrite=TRUE)
+
+### extract elevation raster values for 1km GB grid
+
+# load raster and 1km GB shapefile
+setwd(elevationwd)
+r <- raster("GB_Ireland_CGIAR-STRM_elevation_raster.tif")
+GB1kmlandgrid <- readOGR(paste(parentwd, "/GIS/British Isles/NationalGrids/GB", sep=""), "GB001kmclip2land_corrected")
+
+GB1kmgridtext <- read.table(paste(parentwd, "GIS/British Isles/NationalGrids/gridref lookups/GB001kmgid_eastnorth.txt", sep="/"), sep="\t", header=TRUE)
+GB10kmland <- subset(GB10kmgridtext, land=="1")
+
+test10km <- GB10kmland[300:310,]
+
+# convert projection of GB grid to same as elevation raster
+GB1kmlandgrid.proj2 <- spTransform(GB1kmlandgrid, CRS(proj4string(r)))
+
+testgrid <- subset(GB1kmlandgrid.proj2, grepl(paste(test10km$gridref, collapse="|"), GB1kmlandgrid.proj2$ONEKMREF))
+
+# extract raster values, averaged over 1km grid square
+
+#######!!!!!!!!! extraction of raster data over GB 1km grid clipped to land has run for nearly 3 days (Dec 5 22:30 to Dec 8 18:00) on BTO PC and is not done! This is not practical, need to find another way to extract data
+# extracting a 10km square (at the 1km square level) only took ~ 2 minutes
+# may need to run elevation raster extraction as a loop that cycles through all the 10km squares in GB (only ~3000 of them)
+######!!!!!!!!! maybe test a 100km square and see how long this takes?
+
+# SEE NOTE BELOW #
+
+print(Sys.time())
+# elevation <- extract(r, GB1kmlandgrid.proj2, function(x) mean(x, na.rm=TRUE))
+elevation <- extract(r, testgrid, function(x) mean(x, na.rm=TRUE))
+print(Sys.time())
+
+# add elevation data to 1km grid dataset
+elevation2 <- data.frame(testgrid, elevation)
+colnames(elevation2) <- c("gridref","land","elevation.m")
+
+# merge 1km grid ref elevation data with eastings/northings
+GB1kmgrid <- read.table(paste(gridwd, "gridref lookups/GB001kmgid_eastnorth.txt", sep="/"), header=TRUE)
+ 
+# merge UKCP09 with 1km grid
+elevation.ref <- merge(elevation2, subset(GB1kmgrid, select=c("gridref","easting","northing")), by="gridref")
+
+# write elevation data
+setwd(elevationwd)
+write.table(elevation.ref, file="GB001kmgrid_mean_elevation.txt", row.names=FALSE, col.names=TRUE, quote=FALSE, sep="\t")
+
+################# NOTE ON ELEVATION ################
+# 15/12/2014
+# I've managed to extract the data for BBS squares for the curlew data only (took 2.5 hours on my PC) rather than for the whole country
+# Simon is currently running an extraction of elevation, slope and aspect which is slow but going and will result in 90m resolution outputs for the whole of GB (and Ireland?) using the same CGIAR-STRM data
